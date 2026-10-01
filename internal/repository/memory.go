@@ -3,6 +3,7 @@ package repository
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"example.com/paleo-prep-station/internal/domain"
 )
@@ -19,14 +20,32 @@ type PlanSnapshot struct {
 	Progress []domain.ProgressEntry
 }
 
+// revision 记录缓存条目构建时对应的仓储版本，只有版本仍匹配的条目才能被读取。
+type cachedPlanSnapshot struct {
+	revision uint64
+	value    PlanSnapshot
+}
+
+type cachedPlanList struct {
+	revision uint64
+	values   []domain.PrepPlan
+}
+
+type cachedSpecimenSnapshot struct {
+	revision uint64
+	value    domain.Specimen
+}
+
 type MemoryRepository struct {
 	mu    sync.Mutex
 	state state
+	// revision 在每次 Mutate 提交时递增，用于识别提交前构建的缓存条目。
+	revision atomic.Uint64
 
 	viewMu            sync.RWMutex
-	planSnapshots     map[string]PlanSnapshot
-	planLists         map[string][]domain.PrepPlan
-	specimenSnapshots map[string]domain.Specimen
+	planSnapshots     map[string]cachedPlanSnapshot
+	planLists         map[string]cachedPlanList
+	specimenSnapshots map[string]cachedSpecimenSnapshot
 }
 
 func NewMemory() *MemoryRepository {
@@ -37,16 +56,25 @@ func NewMemory() *MemoryRepository {
 			progress:  make(map[string][]domain.ProgressEntry),
 			releases:  make(map[string]domain.ReleaseRecord),
 		},
-		planSnapshots:     make(map[string]PlanSnapshot),
-		planLists:         make(map[string][]domain.PrepPlan),
-		specimenSnapshots: make(map[string]domain.Specimen),
+		planSnapshots:     make(map[string]cachedPlanSnapshot),
+		planLists:         make(map[string]cachedPlanList),
+		specimenSnapshots: make(map[string]cachedSpecimenSnapshot),
 	}
 }
 
 func (r *MemoryRepository) Read(fn func(*Mutation) error) error {
+	_, err := r.ReadRevision(fn)
+	return err
+}
+
+// ReadRevision 返回读取期间持有的仓储版本，调用方应把它传给对应的 Store 方法。
+func (r *MemoryRepository) ReadRevision(fn func(*Mutation) error) (uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return fn(cloneMutation(r.state))
+	if err := fn(cloneMutation(r.state)); err != nil {
+		return 0, err
+	}
+	return r.revision.Load(), nil
 }
 
 func (r *MemoryRepository) Mutate(fn func(*Mutation) error) error {
@@ -58,54 +86,71 @@ func (r *MemoryRepository) Mutate(fn func(*Mutation) error) error {
 		return err
 	}
 	r.state = tx.snapshot()
+	r.revision.Add(1)
 	return nil
 }
 
 func (r *MemoryRepository) CachedPlanSnapshot(planID string) (PlanSnapshot, bool) {
 	r.viewMu.RLock()
-	defer r.viewMu.RUnlock()
-	value, ok := r.planSnapshots[planID]
-	if !ok {
+	entry, ok := r.planSnapshots[planID]
+	r.viewMu.RUnlock()
+	if !ok || entry.revision != r.revision.Load() {
 		return PlanSnapshot{}, false
 	}
+	value := entry.value
 	value.Progress = append([]domain.ProgressEntry(nil), value.Progress...)
 	return value, true
 }
 
-func (r *MemoryRepository) StorePlanSnapshot(value PlanSnapshot) {
+func (r *MemoryRepository) StorePlanSnapshot(revision uint64, value PlanSnapshot) {
+	if revision != r.revision.Load() {
+		return
+	}
 	value.Progress = append([]domain.ProgressEntry(nil), value.Progress...)
 	r.viewMu.Lock()
 	defer r.viewMu.Unlock()
-	r.planSnapshots[value.Plan.ID] = value
+	r.planSnapshots[value.Plan.ID] = cachedPlanSnapshot{revision: revision, value: value}
 }
 
 func (r *MemoryRepository) CachedPlanList(specimenID string) ([]domain.PrepPlan, bool) {
 	r.viewMu.RLock()
-	defer r.viewMu.RUnlock()
-	values, ok := r.planLists[specimenID]
-	if !ok {
+	entry, ok := r.planLists[specimenID]
+	r.viewMu.RUnlock()
+	if !ok || entry.revision != r.revision.Load() {
 		return nil, false
 	}
-	return append([]domain.PrepPlan(nil), values...), true
+	return append([]domain.PrepPlan(nil), entry.values...), true
 }
 
-func (r *MemoryRepository) StorePlanList(specimenID string, values []domain.PrepPlan) {
+func (r *MemoryRepository) StorePlanList(revision uint64, specimenID string, values []domain.PrepPlan) {
+	if revision != r.revision.Load() {
+		return
+	}
 	r.viewMu.Lock()
 	defer r.viewMu.Unlock()
-	r.planLists[specimenID] = append([]domain.PrepPlan(nil), values...)
+	r.planLists[specimenID] = cachedPlanList{
+		revision: revision,
+		values:   append([]domain.PrepPlan(nil), values...),
+	}
 }
 
 func (r *MemoryRepository) CachedSpecimenSnapshot(specimenID string) (domain.Specimen, bool) {
 	r.viewMu.RLock()
-	defer r.viewMu.RUnlock()
-	value, ok := r.specimenSnapshots[specimenID]
-	return value, ok
+	entry, ok := r.specimenSnapshots[specimenID]
+	r.viewMu.RUnlock()
+	if !ok || entry.revision != r.revision.Load() {
+		return domain.Specimen{}, false
+	}
+	return entry.value, true
 }
 
-func (r *MemoryRepository) StoreSpecimenSnapshot(value domain.Specimen) {
+func (r *MemoryRepository) StoreSpecimenSnapshot(revision uint64, value domain.Specimen) {
+	if revision != r.revision.Load() {
+		return
+	}
 	r.viewMu.Lock()
 	defer r.viewMu.Unlock()
-	r.specimenSnapshots[value.ID] = value
+	r.specimenSnapshots[value.ID] = cachedSpecimenSnapshot{revision: revision, value: value}
 }
 
 func (r *MemoryRepository) InvalidatePlanSnapshot(planID string) {
@@ -126,10 +171,12 @@ func (r *MemoryRepository) InvalidateSpecimenSnapshot(specimenID string) {
 	delete(r.specimenSnapshots, specimenID)
 }
 
-func (r *MemoryRepository) InvalidatePreparationViews(specimenID, _ string) {
+func (r *MemoryRepository) InvalidatePreparationViews(specimenID, planID string) {
 	r.viewMu.Lock()
 	defer r.viewMu.Unlock()
+	delete(r.planSnapshots, planID)
 	delete(r.planLists, specimenID)
+	delete(r.specimenSnapshots, specimenID)
 }
 
 func cloneMutation(source state) *Mutation {

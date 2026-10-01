@@ -61,7 +61,7 @@ func (s *Service) GetSpecimen(ctx context.Context, specimenID string) (domain.Sp
 		return cached, nil
 	}
 	var value domain.Specimen
-	err := s.repo.Read(func(m *repository.Mutation) error {
+	revision, err := s.repo.ReadRevision(func(m *repository.Mutation) error {
 		found, ok := m.GetSpecimen(specimenID)
 		if !ok {
 			return notFoundSpecimen(specimenID)
@@ -70,7 +70,7 @@ func (s *Service) GetSpecimen(ctx context.Context, specimenID string) (domain.Sp
 		return nil
 	})
 	if err == nil {
-		s.repo.StoreSpecimenSnapshot(value)
+		s.repo.StoreSpecimenSnapshot(revision, value)
 	}
 	return value, err
 }

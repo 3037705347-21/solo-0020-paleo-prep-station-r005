@@ -102,7 +102,7 @@ func (s *Service) GetPlan(ctx context.Context, planID string) (PlanSnapshot, err
 		}, nil
 	}
 	var snapshot PlanSnapshot
-	err := s.repo.Read(func(m *repository.Mutation) error {
+	revision, err := s.repo.ReadRevision(func(m *repository.Mutation) error {
 		plan, ok := m.GetPlan(planID)
 		if !ok {
 			return notFoundPlan(planID)
@@ -114,7 +114,7 @@ func (s *Service) GetPlan(ctx context.Context, planID string) (PlanSnapshot, err
 		return nil
 	})
 	if err == nil {
-		s.repo.StorePlanSnapshot(repository.PlanSnapshot{
+		s.repo.StorePlanSnapshot(revision, repository.PlanSnapshot{
 			Plan:     snapshot.Plan,
 			Progress: snapshot.Progress,
 		})
@@ -133,7 +133,7 @@ func (s *Service) ListPlansForSpecimen(
 		return cached, nil
 	}
 	var values []domain.PrepPlan
-	err := s.repo.Read(func(m *repository.Mutation) error {
+	revision, err := s.repo.ReadRevision(func(m *repository.Mutation) error {
 		if _, ok := m.GetSpecimen(specimenID); !ok {
 			return notFoundSpecimen(specimenID)
 		}
@@ -141,7 +141,7 @@ func (s *Service) ListPlansForSpecimen(
 		return nil
 	})
 	if err == nil {
-		s.repo.StorePlanList(specimenID, values)
+		s.repo.StorePlanList(revision, specimenID, values)
 	}
 	return values, err
 }
