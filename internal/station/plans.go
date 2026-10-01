@@ -45,11 +45,10 @@ func (s *Service) CreatePlan(
 		m.PutSpecimen(specimen)
 		created = plan
 		return nil
-	})
-	if err == nil {
+	}, func() {
 		s.repo.InvalidateSpecimenSnapshot(specimenID)
 		s.repo.InvalidatePlanList(specimenID)
-	}
+	})
 	return created, err
 }
 
@@ -82,12 +81,11 @@ func (s *Service) ApprovePlan(
 		m.PutSpecimen(specimen)
 		approved = plan
 		return nil
-	})
-	if err == nil {
+	}, func() {
 		s.repo.InvalidatePlanSnapshot(planID)
 		s.repo.InvalidateSpecimenSnapshot(approved.SpecimenID)
 		s.repo.InvalidatePlanList(approved.SpecimenID)
-	}
+	})
 	return approved, err
 }
 
@@ -111,14 +109,12 @@ func (s *Service) GetPlan(ctx context.Context, planID string) (PlanSnapshot, err
 			Plan:     plan,
 			Progress: m.ProgressForPlan(planID),
 		}
-		return nil
-	})
-	if err == nil {
 		s.repo.StorePlanSnapshot(repository.PlanSnapshot{
 			Plan:     snapshot.Plan,
 			Progress: snapshot.Progress,
 		})
-	}
+		return nil
+	})
 	return snapshot, err
 }
 
@@ -138,10 +134,8 @@ func (s *Service) ListPlansForSpecimen(
 			return notFoundSpecimen(specimenID)
 		}
 		values = m.ListPlansForSpecimen(specimenID)
+		s.repo.StorePlanList(specimenID, values)
 		return nil
 	})
-	if err == nil {
-		s.repo.StorePlanList(specimenID, values)
-	}
 	return values, err
 }

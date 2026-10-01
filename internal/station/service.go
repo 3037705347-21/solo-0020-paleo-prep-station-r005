@@ -67,10 +67,8 @@ func (s *Service) GetSpecimen(ctx context.Context, specimenID string) (domain.Sp
 			return notFoundSpecimen(specimenID)
 		}
 		value = found
+		s.repo.StoreSpecimenSnapshot(found)
 		return nil
 	})
-	if err == nil {
-		s.repo.StoreSpecimenSnapshot(value)
-	}
 	return value, err
 }

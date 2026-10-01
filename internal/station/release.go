@@ -47,9 +47,8 @@ func (s *Service) ReleaseSpecimen(
 		m.PutSpecimen(specimen)
 		created = record
 		return nil
-	})
-	if err == nil {
+	}, func() {
 		s.repo.InvalidateSpecimenSnapshot(specimenID)
-	}
+	})
 	return created, err
 }

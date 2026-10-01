@@ -43,13 +43,19 @@ func NewMemory() *MemoryRepository {
 	}
 }
 
+// Read runs fn against a consistent copy of the committed state. View cache
+// stores performed inside fn stay atomic with the read, because the state
+// lock is held until fn returns.
 func (r *MemoryRepository) Read(fn func(*Mutation) error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return fn(cloneMutation(r.state))
 }
 
-func (r *MemoryRepository) Mutate(fn func(*Mutation) error) error {
+// Mutate commits fn as one atomic state transition. The onCommit hooks run
+// while the state lock is still held, so view invalidations cannot be
+// overtaken by a concurrent read that would refill a stale snapshot.
+func (r *MemoryRepository) Mutate(fn func(*Mutation) error, onCommit ...func()) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -58,6 +64,9 @@ func (r *MemoryRepository) Mutate(fn func(*Mutation) error) error {
 		return err
 	}
 	r.state = tx.snapshot()
+	for _, hook := range onCommit {
+		hook()
+	}
 	return nil
 }
 
@@ -126,10 +135,15 @@ func (r *MemoryRepository) InvalidateSpecimenSnapshot(specimenID string) {
 	delete(r.specimenSnapshots, specimenID)
 }
 
-func (r *MemoryRepository) InvalidatePreparationViews(specimenID, _ string) {
+// InvalidatePreparationViews drops every cached read view that can expose
+// preparation progress for the given specimen and plan: the plan detail
+// snapshot, the specimen's plan list, and the specimen snapshot.
+func (r *MemoryRepository) InvalidatePreparationViews(specimenID, planID string) {
 	r.viewMu.Lock()
 	defer r.viewMu.Unlock()
+	delete(r.planSnapshots, planID)
 	delete(r.planLists, specimenID)
+	delete(r.specimenSnapshots, specimenID)
 }
 
 func cloneMutation(source state) *Mutation {

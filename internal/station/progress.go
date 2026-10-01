@@ -61,9 +61,8 @@ func (s *Service) LogProgress(
 		m.PutSpecimen(specimen)
 		created = entry
 		return nil
-	})
-	if err == nil {
+	}, func() {
 		s.repo.InvalidatePreparationViews(specimenID, planID)
-	}
+	})
 	return created, err
 }
